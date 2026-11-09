@@ -18,7 +18,7 @@ new_sqlite_classes = ["GameRoom"]
 
 [[kv_namespaces]]
 binding = "KV"
-id = "REPLACE_WITH_KV_ID"
+id = "b76214598968493d954396b65b18c698"
 
 [vars]
 DEV_USER = "developer2bg10abi7"
