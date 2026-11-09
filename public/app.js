@@ -7,14 +7,6 @@ const CONFIG = {
   discordId: "1333368658566578259"
 };
 
-const PROJECTS = [
-  { title: "منصة الامتحانات الذكية", desc: "موقع امتحانات بالذكاء الاصطناعي مع دخول للمعلم والطالب وطباعة الأوراق والشهادات.", tags: ["Express", "AI", "Groq"] },
-  { title: "موقع الملازم", desc: "منصة للمعلمين لإنشاء الكتب والملازم مع محرر غني وتوليد أسئلة بالذكاء الاصطناعي.", tags: ["Node.js", "Editor", "AI"] },
-  { title: "Khayal Draw", desc: "محرر صور ورسم احترافي يعمل في المتصفح.", tags: ["React", "Vite", "TypeScript"] },
-  { title: "NovaDB", desc: "قاعدة بيانات مبنية من الصفر على Node.js و Socket.io.", tags: ["Node.js", "Socket.io"] },
-  { title: "بوتات Discord", desc: "بوتات متعددة الأغراض لسيرفرات Discord.", tags: ["discord.js"] }
-];
-
 /* ===== أدوات ===== */
 const $ = (s, r = document) => r.querySelector(s);
 const app = $("#app");
@@ -24,6 +16,7 @@ let ws = null;
 let reconnectTimer = null;
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.ceil(n / 1024)) + " KB";
 
 async function api(url, opts = {}) {
   const token = localStorage.getItem("im_token");
@@ -38,6 +31,15 @@ async function api(url, opts = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error("request failed"), { status: res.status, data });
   return data;
+}
+
+function readBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result.split(",")[1]);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
 }
 
 function navigate(url) {
@@ -65,7 +67,7 @@ function home() {
     </div>
   </section>
   <section class="stats">
-    <div class="glass stat"><b>${PROJECTS.length}+</b><span>مشاريع</span></div>
+    <div class="glass stat"><b>Projects</b><span>تحميل مباشر</span></div>
     <div class="glass stat"><b>Full-Stack</b><span>تطوير شامل</span></div>
     <div class="glass stat"><b>AI</b><span>حلول ذكية</span></div>
   </section>`;
@@ -93,14 +95,24 @@ function about() {
 function projects() {
   return `
   <h2 class="sec-title">المشاريع</h2>
-  <div class="grid">
-    ${PROJECTS.map(p => `
+  <div id="projList" class="grid"><p class="muted">جاري التحميل...</p></div>`;
+}
+
+async function initProjects() {
+  const list = $("#projList");
+  try {
+    const items = await api("/api/projects");
+    if (!items.length) { list.innerHTML = `<p class="muted">ما فيه مشاريع بعد.</p>`; return; }
+    list.innerHTML = items.map(p => `
       <article class="glass proj">
         <h3>${esc(p.title)}</h3>
         <p>${esc(p.desc)}</p>
         <div class="chips">${p.tags.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>
-      </article>`).join("")}
-  </div>`;
+        <a class="btn primary small" href="/api/projects/${p.id}/file" download>تحميل ${esc(p.fileName)} (${fmtSize(p.size)})</a>
+      </article>`).join("");
+  } catch {
+    list.innerHTML = `<p class="err">ما قدرنا نحمّل المشاريع</p>`;
+  }
 }
 
 function lobby() {
@@ -156,7 +168,7 @@ function profile() {
 const routes = [
   { re: /^\/$/, view: home },
   { re: /^\/about$/, view: about },
-  { re: /^\/projects$/, view: projects },
+  { re: /^\/projects$/, view: projects, init: initProjects },
   { re: /^\/games$/, view: lobby, init: initLobby },
   { re: /^\/games\/([A-Za-z0-9]{6})$/, view: m => room(m[1].toUpperCase()), init: m => initRoom(m[1].toUpperCase()) },
   { re: /^\/contact$/, view: contact, init: initContact },
@@ -325,54 +337,71 @@ function renderRoom(s) {
   rematch.textContent = s.rematch === 1 ? "بانتظار الخصم..." : "لعب مرة ثانية";
 }
 
-/* ===== الملف الشخصي وصندوق الرسائل ===== */
+/* ===== الحساب والملف الشخصي ===== */
 async function initProfile() {
   const box = $("#profileBox");
-  if (!localStorage.getItem("im_token")) return renderLogin(box);
+  if (!localStorage.getItem("im_token")) return renderAuth(box);
   try {
-    const msgs = await api("/api/messages");
-    renderDashboard(box, msgs);
+    const { user } = await api("/api/me");
+    await renderDashboard(box, user);
   } catch (err) {
     if (err.status === 401) {
       localStorage.removeItem("im_token");
-      renderLogin(box);
+      renderAuth(box);
     } else {
       box.textContent = "صار خطأ في تحميل الصفحة";
     }
   }
 }
 
-function renderLogin(box) {
+const AUTH_ERRORS = {
+  account_not_found: "الحساب مو موجود. سوِّ حساب جديد من تبويب إنشاء حساب",
+  wrong_password: "كلمة المرور غلط",
+  exists: "اسم المستخدم هذا مأخوذ",
+  invalid_username: "اسم المستخدم لازم يكون حروف إنجليزية وأرقام أو _ (من 3 إلى 20)",
+  weak_password: "كلمة المرور لازم تكون 6 أحرف على الأقل"
+};
+
+function renderAuth(box, mode = "login") {
+  const isLogin = mode === "login";
   box.innerHTML = `
-    <form id="loginForm">
-      <input id="lu" placeholder="اسم المستخدم" autocomplete="username" required>
-      <input id="lp" type="password" placeholder="كلمة المرور" autocomplete="current-password" required>
-      <button class="btn primary" type="submit">دخول</button>
-      <p id="loginErr" class="err"></p>
+    <div class="tabs">
+      <button class="btn small ${isLogin ? "primary" : "ghost"}" data-mode="login">تسجيل دخول</button>
+      <button class="btn small ${isLogin ? "ghost" : "primary"}" data-mode="register">إنشاء حساب</button>
+    </div>
+    <form id="authForm" style="margin-top:20px">
+      <input id="au" placeholder="اسم المستخدم" autocomplete="username" required>
+      <input id="ap" type="password" placeholder="كلمة المرور" autocomplete="${isLogin ? "current-password" : "new-password"}" required>
+      <button class="btn primary" type="submit">${isLogin ? "دخول" : "إنشاء الحساب"}</button>
+      <p id="authErr" class="err"></p>
     </form>`;
 
-  $("#loginForm").onsubmit = async e => {
+  box.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => renderAuth(box, b.dataset.mode));
+
+  $("#authForm").onsubmit = async e => {
     e.preventDefault();
+    const body = JSON.stringify({ username: $("#au").value.trim(), password: $("#ap").value });
     try {
-      const { token } = await api("/api/login", {
-        method: "POST",
-        body: JSON.stringify({ username: $("#lu").value.trim(), password: $("#lp").value })
-      });
-      localStorage.setItem("im_token", token);
+      const data = await api(isLogin ? "/api/login" : "/api/register", { method: "POST", body });
+      localStorage.setItem("im_token", data.token);
       initProfile();
-    } catch {
-      $("#loginErr").textContent = "اسم المستخدم أو كلمة المرور غلط";
+    } catch (err) {
+      $("#authErr").textContent = AUTH_ERRORS[err.data?.error] || "صار خطأ، حاول مرة ثانية";
     }
   };
 }
 
-function renderDashboard(box, msgs) {
+async function renderDashboard(box, user) {
+  const isDev = user.role === "developer";
   const bio = localStorage.getItem("im_bio") || "مطور Discord Bots و Full-Stack.";
   box.innerHTML = `
     <div class="row">
       <div class="row" style="justify-content:flex-start">
-        <div class="avatar">MM</div>
-        <div><h3>${esc(CONFIG.name)}</h3><p class="muted">${esc(CONFIG.discordName)} • ${esc(CONFIG.email)}</p></div>
+        <div class="avatar">${esc(user.id)}</div>
+        <div>
+          <h3>${esc(user.username)}</h3>
+          <p class="muted">${isDev ? "المطور (حساب 01)" : "عضو"}</p>
+        </div>
       </div>
       <button class="btn ghost small" id="logout">خروج</button>
     </div>
@@ -380,15 +409,7 @@ function renderDashboard(box, msgs) {
       <textarea id="bio">${esc(bio)}</textarea>
       <button class="btn primary small" style="align-self:flex-start">حفظ البروفايل</button>
     </form>
-    <h3 style="margin-top:36px">الرسائل الواردة (${msgs.length})</h3>
-    <div style="margin-top:14px">
-      ${msgs.length ? msgs.map(m => `
-        <div class="inbox-item">
-          <b>${esc(m.name)}</b> <small>${esc(m.email)} • ${new Date(m.date).toLocaleString("ar")}</small>
-          <p>${esc(m.message)}</p>
-          <button class="btn small danger" data-del="${esc(m.id)}">حذف</button>
-        </div>`).join("") : `<p class="muted">ما فيه رسائل بعد.</p>`}
-    </div>`;
+    <div id="devArea">${isDev ? "" : `<p class="muted" style="margin-top:30px">حسابك عضو عادي. تقدر تحمّل المشاريع من صفحة المشاريع.</p>`}</div>`;
 
   $("#logout").onclick = () => { localStorage.removeItem("im_token"); initProfile(); };
   $("#bioForm").onsubmit = e => {
@@ -396,7 +417,77 @@ function renderDashboard(box, msgs) {
     localStorage.setItem("im_bio", $("#bio").value);
     alert("تم حفظ البروفايل ✓");
   };
-  box.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+
+  if (isDev) await renderDevArea();
+}
+
+async function renderDevArea() {
+  const area = $("#devArea");
+  const [msgs, projects] = await Promise.all([api("/api/messages"), api("/api/projects")]);
+
+  area.innerHTML = `
+    <h2 class="sec-title" style="margin-top:40px">رفع مشروع</h2>
+    <form id="uploadForm" class="glass pad">
+      <input id="pTitle" placeholder="اسم المشروع" required maxlength="80">
+      <textarea id="pDesc" placeholder="وصف المشروع" maxlength="500" style="min-height:90px"></textarea>
+      <input id="pTags" placeholder="الوسوم مفصولة بفاصلة (مثال: Node.js, AI)">
+      <input id="pFile" type="file" required>
+      <button class="btn primary" type="submit">رفع المشروع</button>
+      <p id="uploadMsg" class="msg"></p>
+    </form>
+
+    <h2 class="sec-title" style="margin-top:40px">مشاريعي (${projects.length})</h2>
+    <div>${projects.length ? projects.map(p => `
+      <div class="inbox-item">
+        <b>${esc(p.title)}</b> <small>${esc(p.fileName)} • ${fmtSize(p.size)}</small>
+        <p class="muted">${esc(p.desc)}</p>
+        <button class="btn small danger" data-delp="${esc(p.id)}">حذف</button>
+      </div>`).join("") : `<p class="muted">ما رفعت مشاريع بعد.</p>`}</div>
+
+    <h2 class="sec-title" style="margin-top:40px">الرسائل الواردة (${msgs.length})</h2>
+    <div>${msgs.length ? msgs.map(m => `
+      <div class="inbox-item">
+        <b>${esc(m.name)}</b> <small>${esc(m.email)} • ${new Date(m.date).toLocaleString("ar")}</small>
+        <p>${esc(m.message)}</p>
+        <button class="btn small danger" data-del="${esc(m.id)}">حذف</button>
+      </div>`).join("") : `<p class="muted">ما فيه رسائل بعد.</p>`}</div>`;
+
+  $("#uploadForm").onsubmit = async e => {
+    e.preventDefault();
+    const file = $("#pFile").files[0];
+    const msg = $("#uploadMsg");
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) { msg.className = "err"; msg.textContent = "الملف أكبر من 15 MB"; return; }
+
+    msg.className = "msg";
+    msg.textContent = "جاري الرفع...";
+    try {
+      const data = await readBase64(file);
+      await api("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          title: $("#pTitle").value.trim(),
+          desc: $("#pDesc").value.trim(),
+          tags: $("#pTags").value,
+          fileName: file.name,
+          fileType: file.type || "application/octet-stream",
+          data
+        })
+      });
+      initProfile();
+    } catch (err) {
+      msg.className = "err";
+      msg.textContent = err.data?.error === "file_too_big" ? "الملف كبير" : "صار خطأ في الرفع";
+    }
+  };
+
+  area.querySelectorAll("[data-delp]").forEach(b => b.onclick = async () => {
+    if (!confirm("تبي تحذف المشروع؟")) return;
+    await api(`/api/projects/${b.dataset.delp}`, { method: "DELETE" });
+    initProfile();
+  });
+
+  area.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     await api(`/api/messages/${encodeURIComponent(b.dataset.del)}`, { method: "DELETE" });
     initProfile();
   });
