@@ -1,4 +1,4 @@
-name = "info-madman"
+name = "info"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
@@ -21,5 +21,4 @@ binding = "KV"
 id = "b76214598968493d954396b65b18c698"
 
 [vars]
-DEV_USER = "developer2bg10abi7"
 DEV_DISCORD_ID = "1333368658566578259"
